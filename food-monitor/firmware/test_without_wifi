@@ -1,0 +1,76 @@
+# main_test.py — Local sensor test (no WiFi / no MQTT)
+# ESP32 MicroPython | DHT11 · MQ2 · KY-018 Photoresistor
+
+import time
+import dht
+from machine import Pin, I2C, ADC
+
+# ══════════════════════════════════════════════════════════════
+#  PIN MAPPING
+# ══════════════════════════════════════════════════════════════
+DHT_PIN    = 32
+MQ2_AO_PIN = 34     # AOUT from MQ2 (analog)
+MQ2_DO_PIN = 9     # DOUT from MQ2 (digital threshold)
+KY018_PIN  = 33    # AO   from KY-018 (analog only)
+
+# ══════════════════════════════════════════════════════════════
+#  SENSOR INIT
+# ══════════════════════════════════════════════════════════════
+dht_sensor = dht.DHT11(Pin(DHT_PIN))
+
+mq2_adc   = ADC(Pin(MQ2_AO_PIN), atten=ADC.ATTN_11DB)
+mq2_do    = Pin(MQ2_DO_PIN, Pin.IN)
+
+ky018_adc = ADC(Pin(KY018_PIN), atten=ADC.ATTN_11DB)
+
+# ══════════════════════════════════════════════════════════════
+#  SENSOR READS
+# ══════════════════════════════════════════════════════════════
+def read_dht():
+    try:
+        dht_sensor.measure()
+        time.sleep_ms(50)
+        return dht_sensor.humidity(), dht_sensor.temperature()
+    except Exception as e:
+        print("[DHT11] Read error:", e)
+        return None, None
+
+def read_mq2():
+    raw   = mq2_adc.read_u16() >> 4    # 0–65535 → 0–4095
+    ppm   = int((raw / 4095) * 1000)
+    alert = mq2_do.value()             # 0 = threshold exceeded, 1 = normal
+    return raw, ppm, alert
+
+def read_ky018():
+    raw        = ky018_adc.read_u16() >> 4    # 0–4095
+    brightness = round((1 - raw / 4095) * 100, 1)
+    return raw, brightness
+
+# ══════════════════════════════════════════════════════════════
+#  MAIN TEST LOOP
+# ══════════════════════════════════════════════════════════════
+print("=" * 40)
+print("  Sensor test mode — no WiFi / MQTT")
+print("=" * 40)
+
+while True:
+    humidity, temperature   = read_dht()
+    mq2_raw, gas_ppm, alert = read_mq2()
+    ky018_raw, brightness   = read_ky018()
+
+    print("\n--- Reading ---")
+
+    if humidity is not None:
+        print("  DHT11  | Humidity   : {} %".format(int(humidity)))
+        print("  DHT11  | Temperature: {} C".format(round(temperature, 1)))
+    else:
+        print("  DHT11  | ERROR — check wiring on pin", DHT_PIN)
+
+    print("  MQ2    | Raw        : {}  /  4095".format(mq2_raw))
+    print("  MQ2    | Gas (ppm)  : {} ppm".format(gas_ppm))
+    print("  MQ2    | Digital    : {} — {}".format(alert, "ALERT" if alert == 0 else "OK"))
+
+    print("  KY-018 | Raw ADC    : {}  /  4095".format(ky018_raw))
+    print("  KY-018 | Brightness : {} %".format(brightness))
+
+    time.sleep(2)
