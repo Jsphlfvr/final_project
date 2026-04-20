@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Food Delivery Monitor</title>
+
+  <!-- Leaflet 1.9.4 -->
+  <link  rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Plotly 2.27 -->
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+  <style>
+    /* ── Reset & base ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #FAFAF8;
+      color: #222;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Top bar ──────────────────────────────────────────── */
+    #topbar {
+      background: #4a7c59;
+      color: #fff;
+      padding: 0 20px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      flex-shrink: 0;
+      box-shadow: 0 2px 8px rgba(0,0,0,.15);
+    }
+    #topbar h1 { font-size: 1rem; font-weight: 700; letter-spacing: .5px; flex-shrink: 0; }
+
+    .stat-pill {
+      background: rgba(255,255,255,.15);
+      border-radius: 8px;
+      padding: 4px 12px;
+      font-size: .82rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      line-height: 1.3;
+      min-width: 80px;
+    }
+    .stat-pill .lbl { font-size: .68rem; opacity: .8; text-transform: uppercase; letter-spacing: .5px; }
+    .stat-pill .val { font-weight: 700; font-size: .95rem; }
+
+    #lastUpdate {
+      margin-left: auto;
+      font-size: .72rem;
+      opacity: .7;
+    }
+
+    /* ── Main layout ──────────────────────────────────────── */
+    #main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    #map { flex: 1; }
+
+    /* ── Side panel ───────────────────────────────────────── */
+    #panel {
+      width: 0;
+      overflow: hidden;
+      transition: width .3s ease;
+      background: #fff;
+      border-left: 1px solid #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    #panel.open { width: 380px; overflow-y: auto; }
+
+    #panelHeader {
+      background: #4a7c59;
+      color: #fff;
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    #panelHeader h2 { font-size: .95rem; }
+    #closePanel {
+      background: none;
+      border: none;
+      color: #fff;
+      font-size: 1.3rem;
+      cursor: pointer;
+      line-height: 1;
+    }
+
+    #panelBody { padding: 14px; flex: 1; }
+
+    /* Score gauge */
+    #scoreGauge {
+      text-align: center;
+      margin-bottom: 14px;
+    }
+    #scoreCircle {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.6rem;
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+    #scoreLbl { font-size: .75rem; color: #555; }
+
+    /* Sensor cards */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .sensor-card {
+      background: #f6faf7;
+      border: 1px solid #c6dece;
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .sensor-card .sc-lbl {
+      font-size: .68rem;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: #4a7c59;
+      margin-bottom: 2px;
+    }
+    .sensor-card .sc-val {
+      font-size: 1.2rem;
+      font-weight: 700;
+    }
+    .sensor-card .sc-unit { font-size: .75rem; color: #666; }
+
+    .chart-block { margin-bottom: 14px; }
+    .chart-block h3 { font-size: .78rem; text-transform: uppercase; color: #666; margin-bottom: 4px; }
+    .chart-block .plotly-graph-div { border-radius: 8px; overflow: hidden; }
+  </style>
+</head>
+<body>
+
+<!-- ── Top bar ─────────────────────────────────────────────── -->
+<div id="topbar">
+  <h1>Food Delivery Monitor</h1>
+  <div class="stat-pill"><span class="lbl">Active</span><span class="val" id="statActive">—</span></div>
+  <div class="stat-pill"><span class="lbl">Humidity</span><span class="val" id="statHum">—</span></div>
+  <div class="stat-pill"><span class="lbl">Temp</span><span class="val" id="statTemp">—</span></div>
+  <div class="stat-pill"><span class="lbl">Gas ppm</span><span class="val" id="statGas">—</span></div>
+  <div class="stat-pill"><span class="lbl">Freshness</span><span class="val" id="statScore">—</span></div>
+  <span id="lastUpdate"></span>
+</div>
+
+<!-- ── Map + panel ──────────────────────────────────────────── -->
+<div id="main">
+  <div id="map"></div>
+
+  <div id="panel">
+    <div id="panelHeader">
+      <h2 id="panelTitle">Transporter —</h2>
+      <button id="closePanel" onclick="closePanel()">✕</button>
+    </div>
+    <div id="panelBody">
+      <div id="scoreGauge">
+        <div id="scoreCircle">—</div>
+        <div id="scoreLbl">Freshness Score</div>
+      </div>
+
+      <div class="cards-grid">
+        <div class="sensor-card">
+          <div class="sc-lbl">Humidity</div>
+          <div><span class="sc-val" id="cHum">—</span><span class="sc-unit"> %</span></div>
+        </div>
+        <div class="sensor-card">
+          <div class="sc-lbl">Temperature</div>
+          <div><span class="sc-val" id="cTemp">—</span><span class="sc-unit"> °C</span></div>
+        </div>
+        <div class="sensor-card">
+          <div class="sc-lbl">Gas</div>
+          <div><span class="sc-val" id="cGas">—</span><span class="sc-unit"> ppm</span></div>
+        </div>
+        <div class="sensor-card">
+          <div class="sc-lbl">Brightness</div>
+          <div><span class="sc-val" id="cBright">—</span><span class="sc-unit"> lux</span></div>
+        </div>
+      </div>
+
+      <div class="chart-block">
+        <h3>Humidity &amp; Temperature</h3>
+        <div id="chartHumTemp"></div>
+      </div>
+      <div class="chart-block">
+        <h3>Gas Concentration</h3>
+        <div id="chartGas"></div>
+      </div>
+      <div class="chart-block">
+        <h3>Brightness</h3>
+        <div id="chartBright"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Map init ────────────────────────────────────────────────
+const map = L.map("map").setView([13.85, 100.57], 13);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: "© OpenStreetMap contributors",
+  maxZoom: 19,
+}).addTo(map);
+
+// ── State ───────────────────────────────────────────────────
+let selectedTid    = null;
+let markers        = {};   // tid → L.marker
+let polylines      = {};   // tid → L.polyline
+let refreshTimer   = null;
+
+// ── Colour by score ─────────────────────────────────────────
+function scoreColor(score) {
+  if (score === null || score === undefined) return "#888";
+  if (score >= 70) return "#4a7c59";
+  if (score >= 40) return "#e08030";
+  return "#e05050";
+}
+
+// ── Panel ───────────────────────────────────────────────────
+function openPanel(tid) {
+  selectedTid = tid;
+  document.getElementById("panelTitle").textContent = `Transporter ${tid}`;
+  document.getElementById("panel").classList.add("open");
+  loadPanelData(tid);
+}
+
+function closePanel() {
+  document.getElementById("panel").classList.remove("open");
+  selectedTid = null;
+}
+
+async function loadPanelData(tid) {
+  const [envRes, scoreRes] = await Promise.all([
+    fetch(`/api/deliveries/${tid}/env?limit=100`),
+    fetch(`/api/deliveries/${tid}/score`)
+  ]);
+
+  if (envRes.ok) {
+    const envData = await envRes.json();
+    const rows = (envData.data || []).reverse();
+    const latest = rows[rows.length - 1] || {};
+    document.getElementById("cHum").textContent   = latest.humidity   ?? "—";
+    document.getElementById("cTemp").textContent  = latest.temperature ?? "—";
+    document.getElementById("cGas").textContent   = latest.gas_concentration ?? "—";
+    document.getElementById("cBright").textContent = latest.brightness ?? "—";
+    renderEnvCharts(rows);
+  }
+
+  if (scoreRes.ok) {
+    const sd = await scoreRes.json();
+    const score = Math.round(sd.score ?? 0);
+    const circle = document.getElementById("scoreCircle");
+    circle.textContent = score;
+    circle.style.background = scoreColor(score);
+  }
+}
+
+function renderEnvCharts(rows) {
+  const times = rows.map(r => r.received_at);
+  const chartCfg = { displayModeBar: false };
+  const layout = { margin: {t:10,b:30,l:40,r:10}, height: 140,
+                   paper_bgcolor:"#f6faf7", plot_bgcolor:"#f6faf7",
+                   font: {size: 10} };
+
+  Plotly.react("chartHumTemp", [
+    { x: times, y: rows.map(r => r.humidity),    name: "Humidity %",  mode: "lines", line: {color:"#4a9fd4"} },
+    { x: times, y: rows.map(r => r.temperature), name: "Temp °C",     mode: "lines", line: {color:"#e08030"} },
+  ], {...layout, yaxis: {title: ""}}, chartCfg);
+
+  Plotly.react("chartGas", [
+    { x: times, y: rows.map(r => r.gas_concentration), name: "Gas ppm", mode: "lines", fill: "tozeroy",
+      line: {color:"#e05050"}, fillcolor: "rgba(224,80,80,.15)" }
+  ], {...layout, yaxis: {title: "ppm"}}, chartCfg);
+
+  Plotly.react("chartBright", [
+    { x: times, y: rows.map(r => r.brightness), name: "Brightness", mode: "lines",
+      line: {color:"#c8a020"} }
+  ], {...layout, yaxis: {title: "lux"}}, chartCfg);
+}
+
+// ── Main refresh ────────────────────────────────────────────
+async function refresh() {
+  try {
+    const [deliveries, stats] = await Promise.all([
+      fetch("/api/deliveries").then(r => r.json()),
+      fetch("/api/fleet/stats").then(r => r.json()),
+    ]);
+    const scores = await fetchAllScores(deliveries);
+
+    // Update top bar
+    document.getElementById("statActive").textContent = stats.active_transporters ?? "—";
+    document.getElementById("statHum").textContent    = (stats.avg_humidity    ?? "—") + " %";
+    document.getElementById("statTemp").textContent   = (stats.avg_temperature ?? "—") + " °C";
+    document.getElementById("statGas").textContent    = (stats.avg_gas_ppm     ?? "—");
+    const allScores = Object.values(scores);
+    const avgScore  = allScores.length
+      ? Math.round(allScores.reduce((a,b) => a+b, 0) / allScores.length)
+      : "—";
+    document.getElementById("statScore").textContent = avgScore;
+    document.getElementById("lastUpdate").textContent =
+      "Updated " + new Date().toLocaleTimeString();
+
+    // Update map
+    await updateMap(deliveries, scores);
+
+    // Refresh panel if open
+    if (selectedTid !== null) loadPanelData(selectedTid);
+
+  } catch (e) {
+    console.error("Refresh error:", e);
+  }
+}
+
+// Bug fix: accept deliveries list already fetched by refresh() — avoids double-fetch
+async function fetchAllScores(deliveries) {
+  try {
+    const tids = deliveries.map(d => d.transporter_id);
+    const results = await Promise.all(
+      tids.map(tid =>
+        fetch(`/api/deliveries/${tid}/score`)
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null)
+      )
+    );
+    const scoreMap = {};
+    results.forEach((r, i) => { if (r) scoreMap[tids[i]] = r.score; });
+    return scoreMap;
+  } catch { return {}; }
+}
+
+async function updateMap(deliveries, scores) {
+  for (const d of deliveries) {
+    const tid   = d.transporter_id;
+    const score = scores[tid] ?? null;
+    const color = scoreColor(score);
+
+    // Fetch GPS track from the correct endpoint and draw polyline
+    try {
+      const gpsRes = await fetch(`/api/deliveries/${tid}/gps?limit=200`);
+      if (gpsRes.ok) {
+        const gpsData = await gpsRes.json();
+        const latlngs = (gpsData.track || []).map(p => [p.lat, p.lon]);
+        if (latlngs.length >= 2) {
+          if (polylines[tid]) {
+            polylines[tid].setLatLngs(latlngs).setStyle({ color });
+          } else {
+            polylines[tid] = L.polyline(latlngs, { color, weight: 3, opacity: 0.8 })
+              .addTo(map)
+              .on("click", () => openPanel(tid));
+          }
+        }
+      }
+    } catch {}
+
+    // Place / update marker on current position
+    if (d.lat == null || d.lon == null) continue;
+    const latlng = [d.lat, d.lon];
+    if (!markers[tid]) {
+      const icon = L.divIcon({
+        className: "",
+        html: `<div style="background:${color};color:#fff;border-radius:50%;
+                           width:32px;height:32px;display:flex;align-items:center;
+                           justify-content:center;font-weight:700;font-size:.85rem;
+                           border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.25)">
+                 ${tid}
+               </div>`,
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
+      });
+      markers[tid] = L.marker(latlng, { icon })
+        .addTo(map)
+        .on("click", () => openPanel(tid));
+    } else {
+      markers[tid].setLatLng(latlng);
+      const iconEl = markers[tid].getElement();
+      if (iconEl) {
+        const inner = iconEl.querySelector("div");
+        if (inner) inner.style.background = color;
+      }
+    }
+  }
+}
+
+// ── Bootstrap ───────────────────────────────────────────────
+refresh();
+refreshTimer = setInterval(refresh, 15_000);
+</script>
+</body>
+</html>

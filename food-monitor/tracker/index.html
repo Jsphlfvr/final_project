@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>GPS Tracker</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #fff;
+      color: #222;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px;
+      gap: 20px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      color: #4a7c59;
+      letter-spacing: .5px;
+    }
+
+    .card {
+      background: #f6faf7;
+      border: 1.5px solid #c6dece;
+      border-radius: 14px;
+      padding: 18px 22px;
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .card h2 {
+      font-size: .8rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #4a7c59;
+      margin-bottom: 8px;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: #ccc;
+      transition: background .3s;
+    }
+    .dot.connected  { background: #4a7c59; }
+    .dot.error      { background: #e05c5c; }
+    .dot.connecting { background: #f0a030; animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: .4; }
+    }
+
+    .coord-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .coord-item label {
+      font-size: .72rem;
+      color: #666;
+      display: block;
+      margin-bottom: 2px;
+    }
+    .coord-item span {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #222;
+    }
+
+    button {
+      background: #4a7c59;
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 16px 0;
+      font-size: 1.1rem;
+      font-weight: 700;
+      width: 100%;
+      max-width: 420px;
+      cursor: pointer;
+      letter-spacing: .3px;
+      transition: background .2s;
+    }
+    button:hover  { background: #3a6348; }
+    button:active { background: #2e5239; }
+    button:disabled { background: #a0b8a8; cursor: not-allowed; }
+
+    .log {
+      width: 100%;
+      max-width: 420px;
+      font-size: .78rem;
+      color: #555;
+      max-height: 120px;
+      overflow-y: auto;
+      background: #f0f0f0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: monospace;
+    }
+
+    .badge {
+      display: inline-block;
+      background: #4a7c59;
+      color: #fff;
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: .75rem;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Food Delivery GPS Tracker</h1>
+
+  <!-- Transporter info -->
+  <div class="card">
+    <h2>Transporter</h2>
+    <div class="status-row">
+      <span>ID:</span>
+      <span class="badge" id="badgeId">—</span>
+    </div>
+  </div>
+
+  <!-- WS status -->
+  <div class="card">
+    <h2>WebSocket Status</h2>
+    <div class="status-row">
+      <div class="dot connecting" id="wsDot"></div>
+      <span id="wsLabel">Connecting…</span>
+    </div>
+  </div>
+
+  <!-- GPS status -->
+  <div class="card">
+    <h2>GPS Status</h2>
+    <div class="status-row">
+      <div class="dot connecting" id="gpsDot"></div>
+      <span id="gpsLabel">Waiting for GPS…</span>
+    </div>
+    <div class="coord-grid" id="coordGrid" style="display:none">
+      <div class="coord-item">
+        <label>Latitude</label>
+        <span id="dispLat">—</span>
+      </div>
+      <div class="coord-item">
+        <label>Longitude</label>
+        <span id="dispLon">—</span>
+      </div>
+      <div class="coord-item">
+        <label>Accuracy (m)</label>
+        <span id="dispAcc">—</span>
+      </div>
+      <div class="coord-item">
+        <label>Last sent</label>
+        <span id="dispTime">—</span>
+      </div>
+    </div>
+  </div>
+
+  <button id="btnStart" onclick="startTracking()">Start Tracking</button>
+
+  <div class="log" id="logBox"></div>
+
+  <script>
+    // ── Transporter ID from URL param ?id=1 ─────────────────
+    const params        = new URLSearchParams(window.location.search);
+    const TRANSPORTER_ID = parseInt(params.get("id") || "1", 10);
+    document.getElementById("badgeId").textContent = TRANSPORTER_ID;
+
+    const WS_URL = `wss://${window.location.host}/red/b6810045589/ws/gps`;
+    const SEND_INTERVAL_MS = 5000;
+
+    let ws          = null;
+    let wsReady     = false;
+    let lastPos     = null;
+    let sendTimer   = null;
+    let retryTimer  = null;
+    let watchId     = null;
+
+    // ── Logging ──────────────────────────────────────────────
+    function log(msg) {
+      const box = document.getElementById("logBox");
+      const ts  = new Date().toLocaleTimeString();
+      box.innerHTML = `[${ts}] ${msg}\n` + box.innerHTML;
+    }
+
+    // ── WebSocket ────────────────────────────────────────────
+    function setWsStatus(state, label) {
+      const dot = document.getElementById("wsDot");
+      dot.className = "dot " + state;
+      document.getElementById("wsLabel").textContent = label;
+    }
+
+    function connectWS() {
+      if (retryTimer) clearTimeout(retryTimer);
+      setWsStatus("connecting", "Connecting…");
+      log("WS connecting to " + WS_URL);
+
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        wsReady = true;
+        setWsStatus("connected", "Connected");
+        log("WS connected");
+      };
+
+      ws.onclose = () => {
+        wsReady = false;
+        setWsStatus("error", "Disconnected — retrying in 3s");
+        log("WS closed, retry in 3s");
+        retryTimer = setTimeout(connectWS, 3000);
+      };
+
+      ws.onerror = (e) => {
+        wsReady = false;
+        setWsStatus("error", "Connection error");
+        log("WS error");
+      };
+    }
+
+    // ── GPS ──────────────────────────────────────────────────
+    function setGpsStatus(state, label) {
+      const dot = document.getElementById("gpsDot");
+      dot.className = "dot " + state;
+      document.getElementById("gpsLabel").textContent = label;
+    }
+
+    function onPosition(pos) {
+      lastPos = pos;
+      setGpsStatus("connected", "GPS active");
+      document.getElementById("coordGrid").style.display = "grid";
+      document.getElementById("dispLat").textContent = pos.coords.latitude.toFixed(6);
+      document.getElementById("dispLon").textContent = pos.coords.longitude.toFixed(6);
+      document.getElementById("dispAcc").textContent = Math.round(pos.coords.accuracy);
+    }
+
+    function onGpsError(err) {
+      setGpsStatus("error", "GPS error: " + err.message);
+      log("GPS error: " + err.message);
+    }
+
+    // ── Send loop ────────────────────────────────────────────
+    function sendPosition() {
+      if (wsReady && ws && lastPos) {
+        const payload = {
+          transporter_id: TRANSPORTER_ID,
+          lat:            lastPos.coords.latitude,
+          lng:            lastPos.coords.longitude,
+          accuracy:       lastPos.coords.accuracy,
+          timestamp:      lastPos.timestamp,
+        };
+        ws.send(JSON.stringify(payload));
+        const t = new Date(lastPos.timestamp).toLocaleTimeString();
+        document.getElementById("dispTime").textContent = t;
+        log(`Sent: ${payload.lat.toFixed(5)}, ${payload.lng.toFixed(5)}`);
+      }
+    }
+
+    // ── Start ────────────────────────────────────────────────
+    function startTracking() {
+      if (!navigator.geolocation) {
+        alert("Geolocation is not supported by this browser.");
+        return;
+      }
+      document.getElementById("btnStart").disabled = true;
+      document.getElementById("btnStart").textContent = "Tracking…";
+
+      connectWS();
+
+      watchId = navigator.geolocation.watchPosition(onPosition, onGpsError, {
+        enableHighAccuracy: true,
+        maximumAge:         2000,
+        timeout:            10000,
+      });
+
+      sendTimer = setInterval(sendPosition, SEND_INTERVAL_MS);
+      log("Tracking started");
+    }
+  </script>
+</body>
+</html>
